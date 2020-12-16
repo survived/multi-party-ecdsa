@@ -29,22 +29,22 @@ crate-type = ["lib"]
 cclst = ["class_group"]
 
 [dependencies]
-paillier = { git = "https://github.com/KZen-networks/rust-paillier", tag = "v0.3.4"}
-zk-paillier = { git = "https://github.com/KZen-networks/zk-paillier", tag = "v0.2.9"}
+paillier = { git = "https://github.com/survived/rust-paillier", branch = "generic-curve" }
+zk-paillier = { git = "https://github.com/survived/zk-paillier", branch = "generic-curv" }
 subtle = { version = "2" }
 serde = { version = "1.0", features = ["derive"] }
 zeroize = "0.10.1"
 libsecp256k1 = "0.3.2"
+derivative = "2.1.1"
 
 
 [dependencies.curv]
-git = "https://github.com/KZen-networks/curv"
-tag = "v0.2.6"
-features = ["ec_secp256k1"]
+git = "https://github.com/survived/curv"
+branch = "expose-testing-macro"
 
 [dependencies.centipede]
-git = "https://github.com/KZen-networks/centipede"
-tag = "v0.2.6"
+git = "https://github.com/survived/centipede"
+branch = "generic-curve"
 
 [dependencies.class_group]
 git = "https://github.com/KZen-networks/class"
@@ -61,6 +61,11 @@ reqwest = { version = "0.9", default-features = false }
 uuid = { version = "0.8", features = ["v4"] }
 serde_json = "1.0"
 rand = "0.7"
+
+[dev-dependencies.curv]
+git = "https://github.com/survived/curv"
+branch = "expose-testing-macro"
+features = ["testing-utils"]
 
 [patch.crates-io]
 rust-gmp = { version = "0.5.0", features = ["serde_support"], git = "https://github.com/KZen-networks/rust-gmp" }

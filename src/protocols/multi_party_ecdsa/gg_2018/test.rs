@@ -16,63 +16,92 @@
     @license GPL-3.0+ <https://github.com/KZen-networks/multi-party-ecdsa/blob/master/LICENSE>
 */
 
+use std::fmt::Debug;
+
 use crate::protocols::multi_party_ecdsa::gg_2018::party_i::{
     verify, KeyGenBroadcastMessage1, KeyGenDecommitMessage1, Keys, LocalSignature, Parameters,
     PartyPrivate, Phase5ADecom1, Phase5Com1, SharedKeys, SignKeys,
 };
 use crate::utilities::mta::{MessageA, MessageB};
 
-use curv::arithmetic::traits::Converter;
 use curv::cryptographic_primitives::hashing::hash_sha256::HSha256;
 use curv::cryptographic_primitives::hashing::traits::Hash;
 use curv::cryptographic_primitives::proofs::sigma_dlog::DLogProof;
 use curv::cryptographic_primitives::secret_sharing::feldman_vss::VerifiableSS;
 use curv::elliptic::curves::traits::*;
-use curv::{FE, GE};
+use curv::test_for_all_curves;
 use paillier::*;
+use zeroize::Zeroize;
 
-#[test]
-fn test_keygen_t1_n2() {
-    keygen_t_n_parties(1, 2);
+test_for_all_curves!(test_keygen_t1_n2);
+fn test_keygen_t1_n2<P>()
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug,
+{
+    keygen_t_n_parties::<P>(1, 2);
 }
 
-#[test]
-fn test_keygen_t2_n3() {
-    keygen_t_n_parties(2, 3);
+test_for_all_curves!(test_keygen_t2_n3);
+fn test_keygen_t2_n3<P>()
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug,
+{
+    keygen_t_n_parties::<P>(2, 3);
 }
 
-#[test]
-fn test_keygen_t2_n4() {
-    keygen_t_n_parties(2, 4);
+test_for_all_curves!(test_keygen_t2_n4);
+fn test_keygen_t2_n4<P>()
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug,
+{
+    keygen_t_n_parties::<P>(2, 4);
 }
 
-#[test]
-fn test_sign_n5_t2_ttag4() {
-    sign(2, 5, 4, vec![0, 2, 3, 4])
+test_for_all_curves!(test_sign_n5_t2_ttag4);
+fn test_sign_n5_t2_ttag4<P>()
+where
+    P: ECPoint + Clone + Send + Sync + Debug + Zeroize,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug + Sync,
+{
+    sign::<P>(2, 5, 4, vec![0, 2, 3, 4])
 }
-#[test]
-fn test_sign_n8_t4_ttag6() {
-    sign(4, 8, 6, vec![0, 1, 2, 4, 6, 7])
+test_for_all_curves!(test_sign_n8_t4_ttag6);
+fn test_sign_n8_t4_ttag6<P>()
+where
+    P: ECPoint + Clone + Send + Sync + Debug + Zeroize,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug + Sync,
+{
+    sign::<P>(4, 8, 6, vec![0, 1, 2, 4, 6, 7])
 }
 
-fn keygen_t_n_parties(t: u16, n: u16) -> (Vec<Keys>, Vec<SharedKeys>, Vec<GE>, GE, VerifiableSS) {
+fn keygen_t_n_parties<P>(
+    t: u16,
+    n: u16,
+) -> (Vec<Keys<P>>, Vec<SharedKeys<P>>, Vec<P>, P, VerifiableSS<P>)
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug,
+{
     let parames = Parameters {
         threshold: t,
         share_count: n,
     };
     let (t, n) = (t as usize, n as usize);
-    let party_keys_vec = (0..n).map(Keys::create).collect::<Vec<Keys>>();
+    let party_keys_vec = (0..n).map(Keys::create).collect::<Vec<Keys<P>>>();
 
     let (bc1_vec, decom_vec): (Vec<_>, Vec<_>) = party_keys_vec
         .iter()
         .map(|k| k.phase1_broadcast_phase3_proof_of_correct_key())
         .unzip();
 
-    let y_vec = (0..n).map(|i| decom_vec[i].y_i).collect::<Vec<GE>>();
+    let y_vec = (0..n).map(|i| decom_vec[i].y_i.clone()).collect::<Vec<P>>();
     let mut y_vec_iter = y_vec.iter();
     let head = y_vec_iter.next().unwrap();
     let tail = y_vec_iter;
-    let y_sum = tail.fold(head.clone(), |acc, x| acc + x);
+    let y_sum = tail.fold(head.clone(), |acc, x| acc + x.clone());
 
     let mut vss_scheme_vec = Vec::new();
     let mut secret_shares_vec = Vec::new();
@@ -101,11 +130,11 @@ fn keygen_t_n_parties(t: u16, n: u16) -> (Vec<Keys>, Vec<SharedKeys>, Vec<GE>, G
             (0..n)
                 .map(|j| {
                     let vec_j = &secret_shares_vec[j];
-                    vec_j[i]
+                    vec_j[i].clone()
                 })
-                .collect::<Vec<FE>>()
+                .collect::<Vec<P::Scalar>>()
         })
-        .collect::<Vec<Vec<FE>>>();
+        .collect::<Vec<Vec<P::Scalar>>>();
 
     let mut shared_keys_vec = Vec::new();
     let mut dlog_proof_vec = Vec::new();
@@ -123,17 +152,25 @@ fn keygen_t_n_parties(t: u16, n: u16) -> (Vec<Keys>, Vec<SharedKeys>, Vec<GE>, G
         dlog_proof_vec.push(dlog_proof);
     }
 
-    let pk_vec = (0..n).map(|i| dlog_proof_vec[i].pk).collect::<Vec<GE>>();
+    let pk_vec = (0..n)
+        .map(|i| dlog_proof_vec[i].pk.clone())
+        .collect::<Vec<P>>();
 
     //both parties run:
     Keys::verify_dlog_proofs(&parames, &dlog_proof_vec, &y_vec).expect("bad dlog proof");
 
     //test
-    let xi_vec = (0..=t).map(|i| shared_keys_vec[i].x_i).collect::<Vec<FE>>();
+    let xi_vec = (0..=t)
+        .map(|i| shared_keys_vec[i].x_i.clone())
+        .collect::<Vec<P::Scalar>>();
     let x = vss_scheme_for_test[0]
         .clone()
         .reconstruct(&index_vec[0..=t], &xi_vec);
-    let sum_u_i = party_keys_vec.iter().fold(FE::zero(), |acc, x| acc + x.u_i);
+    let sum_u_i = party_keys_vec
+        .iter()
+        .fold(<P::Scalar as ECScalar>::zero(), |acc, x| {
+            acc + x.u_i.clone()
+        });
     assert_eq!(x, sum_u_i);
 
     (
@@ -145,13 +182,17 @@ fn keygen_t_n_parties(t: u16, n: u16) -> (Vec<Keys>, Vec<SharedKeys>, Vec<GE>, G
     )
 }
 
-fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
+fn sign<P>(t: u16, n: u16, ttag: u16, s: Vec<usize>)
+where
+    P: ECPoint + Clone + Send + Sync + Debug + Zeroize,
+    P::Scalar: Clone + Zeroize + PartialEq + Debug + Sync,
+{
     // full key gen emulation
     let (party_keys_vec, shared_keys_vec, _pk_vec, y, vss_scheme) = keygen_t_n_parties(t, n);
 
     let private_vec = (0..shared_keys_vec.len())
         .map(|i| PartyPrivate::set_private(party_keys_vec[i].clone(), shared_keys_vec[i].clone()))
-        .collect::<Vec<PartyPrivate>>();
+        .collect::<Vec<PartyPrivate<P>>>();
     // make sure that we have t<t'<n and the group s contains id's for t' parties
     // TODO: make sure s has unique id's and they are all in range 0..n
     // TODO: make sure this code can run when id's are not in ascending order
@@ -164,7 +205,7 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
     // throughout i will index parties
     let sign_keys_vec = (0..ttag)
         .map(|i| SignKeys::create(&private_vec[s[i]], &vss_scheme, s[i], &s))
-        .collect::<Vec<SignKeys>>();
+        .collect::<Vec<SignKeys<P>>>();
 
     // each party computes [Ci,Di] = com(g^gamma_i) and broadcast the commitments
     let (bc1_vec, decommit_vec1): (Vec<_>, Vec<_>) =
@@ -202,7 +243,7 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
                 m_a_vec[ind].clone(),
             );
             let (m_b_w, beta_wi, _, _) =
-                MessageB::b(&key.w_i, &party_keys_vec[s[ind]].ek, m_a_vec[ind].clone());
+                MessageB::<P>::b(&key.w_i, &party_keys_vec[s[ind]].ek, m_a_vec[ind].clone());
 
             m_b_gamma_vec.push(m_b_gamma);
             beta_vec.push(beta_gamma);
@@ -220,12 +261,12 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
     //  for index i=1 j=0 we need party at index s[0] to answer to mb that party s[1]. etc.
     // IRL each party i should get only the mb messages that other parties sent in response to the party i ma's.
     // TODO: simulate as IRL
-    let mut alpha_vec_all = Vec::new();
-    let mut miu_vec_all = Vec::new();
+    let mut alpha_vec_all = vec![];
+    let mut miu_vec_all = vec![];
 
     for i in 0..ttag {
-        let mut alpha_vec = Vec::new();
-        let mut miu_vec = Vec::new();
+        let mut alpha_vec: Vec<(P::Scalar, BigInt)> = vec![];
+        let mut miu_vec: Vec<(P::Scalar, BigInt)> = vec![];
 
         let m_b_gamma_vec_i = &m_b_gamma_vec_all[i];
         let m_b_w_vec_i = &m_b_w_vec_all[i];
@@ -259,11 +300,11 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
     let mut sigma_vec = Vec::new();
 
     for i in 0..ttag {
-        let alpha_vec: Vec<FE> = (0..alpha_vec_all[i].len())
-            .map(|j| alpha_vec_all[i][j].0)
+        let alpha_vec: Vec<P::Scalar> = (0..alpha_vec_all[i].len())
+            .map(|j| alpha_vec_all[i][j].0.clone())
             .collect();
-        let miu_vec: Vec<FE> = (0..miu_vec_all[i].len())
-            .map(|j| miu_vec_all[i][j].0)
+        let miu_vec: Vec<P::Scalar> = (0..miu_vec_all[i].len())
+            .map(|j| miu_vec_all[i][j].0.clone())
             .collect();
 
         let delta = sign_keys_vec[i].phase2_delta_i(&alpha_vec[..], &beta_vec_all[i]);
@@ -273,14 +314,14 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
     }
 
     // all parties broadcast delta_i and compute delta_i ^(-1)
-    let delta_inv = SignKeys::phase3_reconstruct_delta(&delta_vec);
+    let delta_inv = SignKeys::<P>::phase3_reconstruct_delta(&delta_vec);
 
     // de-commit to g^gamma_i from phase1, test comm correctness, and that it is the same value used in MtA.
     // Return R
 
     let _g_gamma_i_vec = (0..ttag)
-        .map(|i| sign_keys_vec[i].g_gamma_i)
-        .collect::<Vec<GE>>();
+        .map(|i| sign_keys_vec[i].g_gamma_i.clone())
+        .collect::<Vec<P>>();
 
     let R_vec = (0..ttag)
         .map(|_| {
@@ -290,11 +331,11 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
                     let b_gamma_vec = &m_b_gamma_vec_all[j];
                     &b_gamma_vec[0].b_proof
                 })
-                .collect::<Vec<&DLogProof>>();
+                .collect::<Vec<&DLogProof<P>>>();
             SignKeys::phase4(&delta_inv, &b_proof_vec, decommit_vec1.clone(), &bc1_vec)
                 .expect("bad gamma_i decommit")
         })
-        .collect::<Vec<GE>>();
+        .collect::<Vec<P>>();
 
     let message: [u8; 4] = [79, 77, 69, 82];
     let message_bn = HSha256::create_hash(&[&BigInt::from(&message[..])]);
@@ -313,7 +354,7 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
     }
 
     let mut phase5_com_vec: Vec<Phase5Com1> = Vec::new();
-    let mut phase_5a_decom_vec: Vec<Phase5ADecom1> = Vec::new();
+    let mut phase_5a_decom_vec: Vec<Phase5ADecom1<P>> = Vec::new();
     let mut helgamal_proof_vec = Vec::new();
     let mut dlog_proof_rho_vec = Vec::new();
     // we notice that the proof for V= R^sg^l, B = A^l is a general form of homomorphic elgamal.
@@ -353,7 +394,7 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
     }
 
     // assuming phase5 checks passes each party sends s_i and compute sum_i{s_i}
-    let mut s_vec: Vec<FE> = Vec::new();
+    let mut s_vec: Vec<P::Scalar> = Vec::new();
     for sig in &local_sig_vec {
         let s_i = sig
             .phase5d(&phase_5d_decom2_vec, &phase5_com2_vec, &phase_5a_decom_vec)
@@ -369,53 +410,44 @@ fn sign(t: u16, n: u16, ttag: u16, s: Vec<usize>) {
 
     assert_eq!(local_sig_vec[0].y, y);
     verify(&sig, &local_sig_vec[0].y, &local_sig_vec[0].m).unwrap();
-    check_sig(&sig.r, &sig.s, &local_sig_vec[0].m, &y);
+    assert!(check_sig(&sig.r, &sig.s, &local_sig_vec[0].m, &y));
 }
 
-fn check_sig(r: &FE, s: &FE, msg: &BigInt, pk: &GE) {
-    use secp256k1::{verify, Message, PublicKey, PublicKeyFormat, Signature};
+fn check_sig<P>(r: &P::Scalar, s: &P::Scalar, msg: &BigInt, pk: &P) -> bool
+where
+    P: ECPoint + Clone,
+{
+    use curv::arithmetic::traits::Modulo;
 
-    let raw_msg = BigInt::to_vec(&msg);
-    let mut msg: Vec<u8> = Vec::new(); // padding
-    msg.extend(vec![0u8; 32 - raw_msg.len()]);
-    msg.extend(raw_msg.iter());
-
-    let msg = Message::parse_slice(msg.as_slice()).unwrap();
-    let slice = pk.pk_to_key_slice();
-    let mut raw_pk = Vec::new();
-    if slice.len() != 65 {
-        // after curv's pk_to_key_slice return 65 bytes, this can be removed
-        raw_pk.insert(0, 4u8);
-        raw_pk.extend(vec![0u8; 64 - slice.len()]);
-        raw_pk.extend(slice);
-    } else {
-        raw_pk.extend(slice);
+    let (r, s) = (r.to_big_int(), s.to_big_int());
+    let q = <P::Scalar as ECScalar>::q();
+    let one = BigInt::from(1);
+    if !(one <= r && r < q) || !(one <= s && s < q) {
+        return false;
     }
 
-    assert_eq!(raw_pk.len(), 65);
+    let s_inv = Modulo::mod_inv(&s, &q);
+    let u1 = Modulo::mod_mul(msg, &s_inv, &q);
+    let u2 = Modulo::mod_mul(&r, &s_inv, &q);
 
-    let pk = PublicKey::parse_slice(&raw_pk, Some(PublicKeyFormat::Full)).unwrap();
+    let u1 = <P::Scalar as ECScalar>::from(&u1);
+    let u2 = <P::Scalar as ECScalar>::from(&u2);
 
-    let mut compact: Vec<u8> = Vec::new();
-    let bytes_r = &r.get_element()[..];
-    compact.extend(vec![0u8; 32 - bytes_r.len()]);
-    compact.extend(bytes_r.iter());
-
-    let bytes_s = &s.get_element()[..];
-    compact.extend(vec![0u8; 32 - bytes_s.len()]);
-    compact.extend(bytes_s.iter());
-
-    let secp_sig = Signature::parse_slice(compact.as_slice()).unwrap();
-
-    let is_correct = verify(&msg, &secp_sig, &pk);
-    assert!(is_correct);
+    let res: P = P::generator() * u1 + pk.clone() * u2;
+    match res.x_coor() {
+        None => false,
+        Some(x) => x == r,
+    }
 }
 
-#[test]
-fn test_serialize_deserialize() {
-    use serde_json;
-
-    let k = Keys::create(0);
+test_for_all_curves!(test_serialize_deserialize);
+fn test_serialize_deserialize<P>()
+where
+    P: ECPoint + Clone + Debug,
+    P: serde::Serialize + for<'de> serde::Deserialize<'de>,
+    P::Scalar: Zeroize + Clone,
+{
+    let k = Keys::<P>::create(0);
     let (commit, decommit) = k.phase1_broadcast_phase3_proof_of_correct_key();
 
     let encoded = serde_json::to_string(&commit).unwrap();
@@ -423,6 +455,6 @@ fn test_serialize_deserialize() {
     assert_eq!(commit.com, decoded.com);
 
     let encoded = serde_json::to_string(&decommit).unwrap();
-    let decoded: KeyGenDecommitMessage1 = serde_json::from_str(&encoded).unwrap();
+    let decoded: KeyGenDecommitMessage1<P> = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decommit.y_i, decoded.y_i);
 }

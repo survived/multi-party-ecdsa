@@ -23,16 +23,17 @@ use curv::cryptographic_primitives::commitments::traits::Commitment;
 use curv::cryptographic_primitives::hashing::hash_sha256::HSha256;
 use curv::cryptographic_primitives::hashing::traits::Hash;
 use curv::cryptographic_primitives::proofs::sigma_correct_homomorphic_elgamal_enc::*;
-use curv::cryptographic_primitives::proofs::sigma_dlog::{DLogProof, ProveDLog};
+use curv::cryptographic_primitives::proofs::sigma_dlog::DLogProof;
 use curv::cryptographic_primitives::secret_sharing::feldman_vss::VerifiableSS;
 use curv::elliptic::curves::traits::*;
-use curv::{BigInt, FE, GE};
+use curv::BigInt;
+use zeroize::Zeroize;
 
 use paillier::{
     Decrypt, DecryptionKey, EncryptionKey, KeyGeneration, Paillier, RawCiphertext, RawPlaintext,
 };
 use serde::{Deserialize, Serialize};
-use zk_paillier::zkproofs::NICorrectKeyProof;
+use zk_paillier::zkproofs::{NICorrectKeyProof, SALT_STRING};
 
 use crate::Error::{self, InvalidCom, InvalidKey, InvalidSS, InvalidSig};
 
@@ -45,18 +46,18 @@ pub struct Parameters {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Keys {
-    pub u_i: FE,
-    pub y_i: GE,
+pub struct Keys<P: ECPoint> {
+    pub u_i: P::Scalar,
+    pub y_i: P,
     pub dk: DecryptionKey,
     pub ek: EncryptionKey,
     pub party_index: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct PartyPrivate {
-    u_i: FE,
-    x_i: FE,
+pub struct PartyPrivate<P: ECPoint> {
+    u_i: P::Scalar,
+    x_i: P::Scalar,
     dk: DecryptionKey,
 }
 
@@ -68,24 +69,24 @@ pub struct KeyGenBroadcastMessage1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct KeyGenDecommitMessage1 {
+pub struct KeyGenDecommitMessage1<P: ECPoint> {
     pub blind_factor: BigInt,
-    pub y_i: GE,
+    pub y_i: P,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SharedKeys {
-    pub y: GE,
-    pub x_i: FE,
+pub struct SharedKeys<P: ECPoint> {
+    pub y: P,
+    pub x_i: P::Scalar,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignKeys {
-    pub w_i: FE,
-    pub g_w_i: GE,
-    pub k_i: FE,
-    pub gamma_i: FE,
-    pub g_gamma_i: GE,
+pub struct SignKeys<P: ECPoint> {
+    pub w_i: P::Scalar,
+    pub g_w_i: P,
+    pub k_i: P::Scalar,
+    pub gamma_i: P::Scalar,
+    pub g_gamma_i: P,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,19 +95,19 @@ pub struct SignBroadcastPhase1 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignDecommitPhase1 {
+pub struct SignDecommitPhase1<P: ECPoint> {
     pub blind_factor: BigInt,
-    pub g_gamma_i: GE,
+    pub g_gamma_i: P,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct LocalSignature {
-    pub l_i: FE,
-    pub rho_i: FE,
-    pub R: GE,
-    pub s_i: FE,
+pub struct LocalSignature<P: ECPoint> {
+    pub l_i: P::Scalar,
+    pub rho_i: P::Scalar,
+    pub R: P,
+    pub s_i: P::Scalar,
     pub m: BigInt,
-    pub y: GE,
+    pub y: P,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,31 +121,35 @@ pub struct Phase5Com2 {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Phase5ADecom1 {
-    pub V_i: GE,
-    pub A_i: GE,
-    pub B_i: GE,
+pub struct Phase5ADecom1<P: ECPoint> {
+    pub V_i: P,
+    pub A_i: P,
+    pub B_i: P,
     pub blind_factor: BigInt,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Phase5DDecom2 {
-    pub u_i: GE,
-    pub t_i: GE,
+pub struct Phase5DDecom2<P: ECPoint> {
+    pub u_i: P,
+    pub t_i: P,
     pub blind_factor: BigInt,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct SignatureRecid {
-    pub r: FE,
-    pub s: FE,
+pub struct SignatureRecid<P: ECPoint> {
+    pub r: P::Scalar,
+    pub s: P::Scalar,
     pub recid: u8,
 }
 
-impl Keys {
+impl<P> Keys<P>
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone + Zeroize,
+{
     pub fn create(index: usize) -> Self {
-        let u = FE::new_random();
-        let y = GE::generator() * u;
+        let u = <P::Scalar as ECScalar>::new_random();
+        let y = P::generator() * u.clone();
         let (ek, dk) = Paillier::keypair().keys();
 
         Self {
@@ -157,9 +162,9 @@ impl Keys {
     }
 
     // we recommend using safe primes if the code is used in production
-    pub fn create_safe_prime(index: usize) -> Keys {
-        let u: FE = ECScalar::new_random();
-        let y = &ECPoint::generator() * &u;
+    pub fn create_safe_prime(index: usize) -> Keys<P> {
+        let u: P::Scalar = ECScalar::new_random();
+        let y = P::generator() * u.clone();
 
         let (ek, dk) = Paillier::keypair_safe_primes().keys();
 
@@ -171,8 +176,8 @@ impl Keys {
             party_index: index.clone(),
         }
     }
-    pub fn create_from(u: FE, index: usize) -> Keys {
-        let y = &ECPoint::generator() * &u;
+    pub fn create_from(u: P::Scalar, index: usize) -> Keys<P> {
+        let y = P::generator() * u.clone();
         let (ek, dk) = Paillier::keypair().keys();
 
         Self {
@@ -186,9 +191,9 @@ impl Keys {
 
     pub fn phase1_broadcast_phase3_proof_of_correct_key(
         &self,
-    ) -> (KeyGenBroadcastMessage1, KeyGenDecommitMessage1) {
+    ) -> (KeyGenBroadcastMessage1, KeyGenDecommitMessage1<P>) {
         let blind_factor = BigInt::sample(SECURITY);
-        let correct_key_proof = NICorrectKeyProof::proof(&self.dk);
+        let correct_key_proof = NICorrectKeyProof::proof(&self.dk, None);
         let com = HashCommitment::create_commitment_with_user_defined_randomness(
             &self.y_i.bytes_compressed_to_big_int(),
             &blind_factor,
@@ -200,17 +205,17 @@ impl Keys {
         };
         let decom1 = KeyGenDecommitMessage1 {
             blind_factor,
-            y_i: self.y_i,
+            y_i: self.y_i.clone(),
         };
         (bcm1, decom1)
     }
-
+    //
     pub fn phase1_verify_com_phase3_verify_correct_key_phase2_distribute(
         &self,
         params: &Parameters,
-        decom_vec: &[KeyGenDecommitMessage1],
+        decom_vec: &[KeyGenDecommitMessage1<P>],
         bc1_vec: &[KeyGenBroadcastMessage1],
-    ) -> Result<(VerifiableSS, Vec<FE>, usize), Error> {
+    ) -> Result<(VerifiableSS<P>, Vec<P::Scalar>, usize), Error> {
         // test length:
         assert_eq!(decom_vec.len() as u16, params.share_count);
         assert_eq!(bc1_vec.len() as u16, params.share_count);
@@ -221,7 +226,10 @@ impl Keys {
                     &decom_vec[i].y_i.bytes_compressed_to_big_int(),
                     &decom_vec[i].blind_factor,
                 ) == bc1_vec[i].com
-                    && bc1_vec[i].correct_key_proof.verify(&bc1_vec[i].e).is_ok()
+                    && bc1_vec[i]
+                        .correct_key_proof
+                        .verify(&bc1_vec[i].e, SALT_STRING)
+                        .is_ok()
             })
             .all(|x| x);
 
@@ -240,11 +248,11 @@ impl Keys {
     pub fn phase2_verify_vss_construct_keypair_phase3_pok_dlog(
         &self,
         params: &Parameters,
-        y_vec: &[GE],
-        secret_shares_vec: &[FE],
-        vss_scheme_vec: &[VerifiableSS],
+        y_vec: &[P],
+        secret_shares_vec: &[P::Scalar],
+        vss_scheme_vec: &[VerifiableSS<P>],
         index: usize,
-    ) -> Result<(SharedKeys, DLogProof), Error> {
+    ) -> Result<(SharedKeys<P>, DLogProof<P>), Error> {
         assert_eq!(y_vec.len() as u16, params.share_count);
         assert_eq!(secret_shares_vec.len() as u16, params.share_count);
         assert_eq!(vss_scheme_vec.len() as u16, params.share_count);
@@ -254,15 +262,17 @@ impl Keys {
                 vss_scheme_vec[i]
                     .validate_share(&secret_shares_vec[i], index)
                     .is_ok()
-                    && vss_scheme_vec[i].commitments[0].get_element() == y_vec[i].get_element()
+                    && vss_scheme_vec[i].commitments[0] == y_vec[i]
             })
             .all(|x| x);
 
         if correct_ss_verify {
             let (head, tail) = y_vec.split_at(1);
-            let y = tail.iter().fold(head[0], |acc, x| acc + x);
+            let y = tail.iter().fold(head[0].clone(), |acc, x| acc + x.clone());
 
-            let x_i = secret_shares_vec.iter().fold(FE::zero(), |acc, x| acc + x);
+            let x_i = secret_shares_vec
+                .iter()
+                .fold(<P::Scalar as ECScalar>::zero(), |acc, x| acc + x.clone());
             let dlog_proof = DLogProof::prove(&x_i);
             Ok((SharedKeys { y, x_i }, dlog_proof))
         } else {
@@ -270,37 +280,37 @@ impl Keys {
         }
     }
 
-    pub fn get_commitments_to_xi(vss_scheme_vec: &[VerifiableSS]) -> Vec<GE> {
+    pub fn get_commitments_to_xi(vss_scheme_vec: &[VerifiableSS<P>]) -> Vec<P> {
         let len = vss_scheme_vec.len();
         (1..=len)
             .map(|i| {
                 let xij_points_vec = (0..len)
                     .map(|j| vss_scheme_vec[j].get_point_commitment(i))
-                    .collect::<Vec<GE>>();
+                    .collect::<Vec<P>>();
 
                 let mut xij_points_iter = xij_points_vec.iter();
                 let first = xij_points_iter.next().unwrap();
 
                 let tail = xij_points_iter;
-                tail.fold(first.clone(), |acc, x| acc + x)
+                tail.fold(first.clone(), |acc, x| acc + x.clone())
             })
-            .collect::<Vec<GE>>()
+            .collect::<Vec<P>>()
     }
 
     pub fn update_commitments_to_xi(
-        comm: &GE,
-        vss_scheme: &VerifiableSS,
+        comm: &P,
+        vss_scheme: &VerifiableSS<P>,
         index: usize,
         s: &[usize],
-    ) -> GE {
+    ) -> P {
         let li = vss_scheme.map_share_to_new_params(index, s);
-        comm * &li
+        comm.clone() * li
     }
 
     pub fn verify_dlog_proofs(
         params: &Parameters,
-        dlog_proofs_vec: &[DLogProof],
-        y_vec: &[GE],
+        dlog_proofs_vec: &[DLogProof<P>],
+        y_vec: &[P],
     ) -> Result<(), Error> {
         assert_eq!(y_vec.len() as u16, params.share_count);
         assert_eq!(dlog_proofs_vec.len() as u16, params.share_count);
@@ -316,8 +326,12 @@ impl Keys {
     }
 }
 
-impl PartyPrivate {
-    pub fn set_private(key: Keys, shared_key: SharedKeys) -> Self {
+impl<P> PartyPrivate<P>
+where
+    P: ECPoint + Clone + Send + Sync,
+    P::Scalar: Clone + PartialEq + Sync,
+{
+    pub fn set_private(key: Keys<P>, shared_key: SharedKeys<P>) -> Self {
         Self {
             u_i: key.u_i,
             x_i: shared_key.x_i,
@@ -325,18 +339,18 @@ impl PartyPrivate {
         }
     }
 
-    pub fn y_i(&self) -> GE {
-        let g: GE = ECPoint::generator();
-        g * self.u_i
+    pub fn y_i(&self) -> P {
+        let g: P = ECPoint::generator();
+        g * self.u_i.clone()
     }
 
     pub fn decrypt(&self, ciphertext: BigInt) -> RawPlaintext {
         Paillier::decrypt(&self.dk, &RawCiphertext::from(ciphertext))
     }
 
-    pub fn refresh_private_key(&self, factor: &FE, index: usize) -> Keys {
-        let u: FE = self.u_i + factor;
-        let y = GE::generator() * u;
+    pub fn refresh_private_key(&self, factor: &P::Scalar, index: usize) -> Keys<P> {
+        let u: P::Scalar = self.u_i.clone() + factor.clone();
+        let y = P::generator() * u.clone();
         let (ek, dk) = Paillier::keypair().keys();
 
         Keys {
@@ -349,9 +363,9 @@ impl PartyPrivate {
     }
 
     // we recommend using safe primes if the code is used in production
-    pub fn refresh_private_key_safe_prime(&self, factor: &FE, index: usize) -> Keys {
-        let u: FE = self.u_i + factor;
-        let y = &ECPoint::generator() * &u;
+    pub fn refresh_private_key_safe_prime(&self, factor: &P::Scalar, index: usize) -> Keys<P> {
+        let u: P::Scalar = self.u_i.clone() + factor.clone();
+        let y = P::generator() * u.clone();
         let (ek, dk) = Paillier::keypair_safe_primes().keys();
 
         Keys {
@@ -368,34 +382,38 @@ impl PartyPrivate {
         &self,
         segment_size: usize,
         num_of_segments: usize,
-        pub_ke_y: &GE,
-        g: &GE,
-    ) -> (Witness, Helgamalsegmented) {
+        pub_ke_y: &P,
+        g: &P,
+    ) -> (Witness<P::Scalar>, Helgamalsegmented<P>) {
         Msegmentation::to_encrypted_segments(&self.u_i, &segment_size, num_of_segments, pub_ke_y, g)
     }
 
-    pub fn update_private_key(&self, factor_u_i: &FE, factor_x_i: &FE) -> Self {
+    pub fn update_private_key(&self, factor_u_i: &P::Scalar, factor_x_i: &P::Scalar) -> Self {
         PartyPrivate {
-            u_i: self.u_i + factor_u_i,
-            x_i: self.x_i + factor_x_i,
+            u_i: self.u_i.clone() + factor_u_i.clone(),
+            x_i: self.x_i.clone() + factor_x_i.clone(),
             dk: self.dk.clone(),
         }
     }
 }
 
-impl SignKeys {
+impl<P> SignKeys<P>
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone,
+{
     pub fn create(
-        private: &PartyPrivate,
-        vss_scheme: &VerifiableSS,
+        private: &PartyPrivate<P>,
+        vss_scheme: &VerifiableSS<P>,
         index: usize,
         s: &[usize],
     ) -> Self {
         let li = vss_scheme.map_share_to_new_params(index, s);
-        let w_i = li * private.x_i;
-        let g: GE = ECPoint::generator();
-        let g_w_i = g * w_i;
-        let gamma_i: FE = ECScalar::new_random();
-        let g_gamma_i = g * gamma_i;
+        let w_i = li * private.x_i.clone();
+        let g: P = ECPoint::generator();
+        let g_w_i = g.clone() * w_i.clone();
+        let gamma_i: P::Scalar = ECScalar::new_random();
+        let g_gamma_i = g.clone() * gamma_i.clone();
 
         Self {
             w_i,
@@ -406,10 +424,10 @@ impl SignKeys {
         }
     }
 
-    pub fn phase1_broadcast(&self) -> (SignBroadcastPhase1, SignDecommitPhase1) {
+    pub fn phase1_broadcast(&self) -> (SignBroadcastPhase1, SignDecommitPhase1<P>) {
         let blind_factor = BigInt::sample(SECURITY);
-        let g: GE = ECPoint::generator();
-        let g_gamma_i = g * self.gamma_i;
+        let g: P = ECPoint::generator();
+        let g_gamma_i = g * self.gamma_i.clone();
         let com = HashCommitment::create_commitment_with_user_defined_randomness(
             &g_gamma_i.bytes_compressed_to_big_int(),
             &blind_factor,
@@ -419,12 +437,12 @@ impl SignKeys {
             SignBroadcastPhase1 { com },
             SignDecommitPhase1 {
                 blind_factor,
-                g_gamma_i: self.g_gamma_i,
+                g_gamma_i: self.g_gamma_i.clone(),
             },
         )
     }
 
-    pub fn phase2_delta_i(&self, alpha_vec: &[FE], beta_vec: &[FE]) -> FE {
+    pub fn phase2_delta_i(&self, alpha_vec: &[P::Scalar], beta_vec: &[P::Scalar]) -> P::Scalar {
         let vec_len = alpha_vec.len();
         assert_eq!(alpha_vec.len(), beta_vec.len());
         // assert_eq!(alpha_vec.len(), self.s.len() - 1);
@@ -434,7 +452,7 @@ impl SignKeys {
             .fold(ki_gamma_i, |acc, x| acc + x)
     }
 
-    pub fn phase2_sigma_i(&self, miu_vec: &[FE], ni_vec: &[FE]) -> FE {
+    pub fn phase2_sigma_i(&self, miu_vec: &[P::Scalar], ni_vec: &[P::Scalar]) -> P::Scalar {
         let vec_len = miu_vec.len();
         assert_eq!(miu_vec.len(), ni_vec.len());
         //assert_eq!(miu_vec.len(), self.s.len() - 1);
@@ -444,23 +462,25 @@ impl SignKeys {
             .fold(ki_w_i, |acc, x| acc + x)
     }
 
-    pub fn phase3_reconstruct_delta(delta_vec: &[FE]) -> FE {
-        let sum = delta_vec.iter().fold(FE::zero(), |acc, x| acc + x);
+    pub fn phase3_reconstruct_delta(delta_vec: &[P::Scalar]) -> P::Scalar {
+        let sum = delta_vec
+            .iter()
+            .fold(<P::Scalar as ECScalar>::zero(), |acc, x| acc + x.clone());
         sum.invert()
     }
 
     pub fn phase4(
-        delta_inv: &FE,
-        b_proof_vec: &[&DLogProof],
-        phase1_decommit_vec: Vec<SignDecommitPhase1>,
+        delta_inv: &P::Scalar,
+        b_proof_vec: &[&DLogProof<P>],
+        phase1_decommit_vec: Vec<SignDecommitPhase1<P>>,
         bc1_vec: &[SignBroadcastPhase1],
-    ) -> Result<GE, Error> {
+    ) -> Result<P, Error> {
         // note: b_proof_vec is populated using the results
-        //from the MtAwc, which is handling the proof of knowledge verification of gamma_i such that
+        //from the MtAwc, which is handling the proof of knowledP verification of gamma_i such that
         // Gamme_i = gamma_i * G in the verify_proofs_get_alpha()
         let test_b_vec_and_com = (0..b_proof_vec.len())
             .map(|i| {
-                b_proof_vec[i].pk.get_element() == phase1_decommit_vec[i].g_gamma_i.get_element()
+                b_proof_vec[i].pk == phase1_decommit_vec[i].g_gamma_i
                     && HashCommitment::create_commitment_with_user_defined_randomness(
                         &phase1_decommit_vec[i]
                             .g_gamma_i
@@ -475,9 +495,10 @@ impl SignKeys {
         let tail = g_gamma_i_iter;
         if test_b_vec_and_com {
             Ok({
-                let gamma_sum = tail.fold(head.g_gamma_i, |acc, x| acc + x.g_gamma_i);
+                let gamma_sum =
+                    tail.fold(head.g_gamma_i.clone(), |acc, x| acc + x.g_gamma_i.clone());
                 // R
-                gamma_sum * delta_inv
+                gamma_sum * delta_inv.clone()
             })
         } else {
             Err(InvalidKey)
@@ -485,47 +506,63 @@ impl SignKeys {
     }
 }
 
-impl LocalSignature {
-    pub fn phase5_local_sig(k_i: &FE, message: &BigInt, R: &GE, sigma_i: &FE, pubkey: &GE) -> Self {
-        let m_fe: FE = ECScalar::from(message);
-        let r: FE = ECScalar::from(&R.x_coor().unwrap().mod_floor(&FE::q()));
-        let s_i = m_fe * k_i + r * sigma_i;
-        let l_i: FE = ECScalar::new_random();
-        let rho_i: FE = ECScalar::new_random();
+impl<P> LocalSignature<P>
+where
+    P: ECPoint + Clone + Zeroize,
+    P::Scalar: Clone + PartialEq + Zeroize,
+{
+    pub fn phase5_local_sig(
+        k_i: &P::Scalar,
+        message: &BigInt,
+        R: &P,
+        sigma_i: &P::Scalar,
+        pubkey: &P,
+    ) -> Self {
+        let m_fe: P::Scalar = ECScalar::from(message);
+        let r: P::Scalar =
+            ECScalar::from(&R.x_coor().unwrap().mod_floor(&<P::Scalar as ECScalar>::q()));
+        let s_i = m_fe * k_i.clone() + r * sigma_i.clone();
+        let l_i: P::Scalar = ECScalar::new_random();
+        let rho_i: P::Scalar = ECScalar::new_random();
         Self {
             l_i,
             rho_i,
-            R: *R,
+            R: R.clone(),
             s_i,
             m: message.clone(),
-            y: *pubkey,
+            y: pubkey.clone(),
         }
     }
 
     pub fn phase5a_broadcast_5b_zkproof(
         &self,
-    ) -> (Phase5Com1, Phase5ADecom1, HomoELGamalProof, DLogProof) {
+    ) -> (
+        Phase5Com1,
+        Phase5ADecom1<P>,
+        HomoELGamalProof<P>,
+        DLogProof<P>,
+    ) {
         let blind_factor = BigInt::sample(SECURITY);
-        let g: GE = ECPoint::generator();
-        let A_i = g * self.rho_i;
+        let g: P = ECPoint::generator();
+        let A_i = g.clone() * self.rho_i.clone();
         let l_i_rho_i = self.l_i.mul(&self.rho_i.get_element());
-        let B_i = g * l_i_rho_i;
-        let V_i = self.R * self.s_i + g * self.l_i;
+        let B_i = g.clone() * l_i_rho_i;
+        let V_i = self.R.clone() * self.s_i.clone() + g.clone() * self.l_i.clone();
         let input_hash = HSha256::create_hash_from_ge(&[&V_i, &A_i, &B_i]).to_big_int();
         let com = HashCommitment::create_commitment_with_user_defined_randomness(
             &input_hash,
             &blind_factor,
         );
         let witness = HomoElGamalWitness {
-            r: self.l_i,
-            x: self.s_i,
+            r: self.l_i.clone(),
+            x: self.s_i.clone(),
         };
         let delta = HomoElGamalStatement {
-            G: A_i,
-            H: self.R,
-            Y: g,
-            D: V_i,
-            E: B_i,
+            G: A_i.clone(),
+            H: self.R.clone(),
+            Y: g.clone(),
+            D: V_i.clone(),
+            E: B_i.clone(),
         };
         let dlog_proof_rho = DLogProof::prove(&self.rho_i);
         let proof = HomoELGamalProof::prove(&witness, &delta);
@@ -545,24 +582,24 @@ impl LocalSignature {
 
     pub fn phase5c(
         &self,
-        decom_vec: &[Phase5ADecom1],
+        decom_vec: &[Phase5ADecom1<P>],
         com_vec: &[Phase5Com1],
-        elgamal_proofs: &[HomoELGamalProof],
-        dlog_proofs_rho: &[DLogProof],
-        v_i: &GE,
-        R: &GE,
-    ) -> Result<(Phase5Com2, Phase5DDecom2), Error> {
+        elgamal_proofs: &[HomoELGamalProof<P>],
+        dlog_proofs_rho: &[DLogProof<P>],
+        v_i: &P,
+        R: &P,
+    ) -> Result<(Phase5Com2, Phase5DDecom2<P>), Error> {
         assert_eq!(decom_vec.len(), com_vec.len());
 
-        let g: GE = ECPoint::generator();
+        let g: P = ECPoint::generator();
         let test_com_elgamal = (0..com_vec.len())
             .map(|i| {
                 let delta = HomoElGamalStatement {
-                    G: decom_vec[i].A_i,
-                    H: *R,
-                    Y: g,
-                    D: decom_vec[i].V_i,
-                    E: decom_vec[i].B_i,
+                    G: decom_vec[i].A_i.clone(),
+                    H: R.clone(),
+                    Y: g.clone(),
+                    D: decom_vec[i].V_i.clone(),
+                    E: decom_vec[i].B_i.clone(),
                 };
                 let input_hash = HSha256::create_hash_from_ge(&[
                     &decom_vec[i].V_i,
@@ -582,26 +619,32 @@ impl LocalSignature {
 
         let v_vec = (0..com_vec.len())
             .map(|i| &decom_vec[i].V_i)
-            .collect::<Vec<&GE>>();
+            .collect::<Vec<&P>>();
         let a_vec = (0..com_vec.len())
             .map(|i| &decom_vec[i].A_i)
-            .collect::<Vec<&GE>>();
+            .collect::<Vec<&P>>();
 
-        let v = v_vec.iter().fold(v_i.clone(), |acc, x| acc + *x);
+        let v = v_vec.iter().fold(v_i.clone(), |acc, x| acc + (*x).clone());
         // V = -mG -ry - sum (vi)
         let mut a_i_iter = a_vec.iter();
         let head = a_i_iter.next().unwrap();
         let tail = a_i_iter;
         let a = tail.fold((*head).clone(), |acc, x| acc.add_point(&(*x).get_element()));
 
-        let r: FE = ECScalar::from(&self.R.x_coor().unwrap().mod_floor(&FE::q()));
-        let yr = self.y * r;
-        let g: GE = ECPoint::generator();
-        let m_fe: FE = ECScalar::from(&self.m);
+        let r: P::Scalar = ECScalar::from(
+            &self
+                .R
+                .x_coor()
+                .unwrap()
+                .mod_floor(&<P::Scalar as ECScalar>::q()),
+        );
+        let yr = self.y.clone() * r;
+        let g: P = ECPoint::generator();
+        let m_fe: P::Scalar = ECScalar::from(&self.m);
         let gm = g * m_fe;
         let v = v.sub_point(&gm.get_element()).sub_point(&yr.get_element());
-        let u_i = v * self.rho_i;
-        let t_i = a * self.l_i;
+        let u_i = v * self.rho_i.clone();
+        let t_i = a * self.l_i.clone();
         let input_hash = HSha256::create_hash_from_ge(&[&u_i, &t_i]).to_big_int();
         let blind_factor = BigInt::sample(SECURITY);
         let com = HashCommitment::create_commitment_with_user_defined_randomness(
@@ -627,10 +670,10 @@ impl LocalSignature {
 
     pub fn phase5d(
         &self,
-        decom_vec2: &[Phase5DDecom2],
+        decom_vec2: &[Phase5DDecom2<P>],
         com_vec2: &[Phase5Com2],
-        decom_vec1: &[Phase5ADecom1],
-    ) -> Result<FE, Error> {
+        decom_vec1: &[Phase5ADecom1<P>],
+    ) -> Result<P::Scalar, Error> {
         assert_eq!(decom_vec2.len(), decom_vec1.len());
         assert_eq!(decom_vec2.len(), com_vec2.len());
 
@@ -648,22 +691,25 @@ impl LocalSignature {
 
         let t_vec = (0..com_vec2.len())
             .map(|i| &decom_vec2[i].t_i)
-            .collect::<Vec<&GE>>();
+            .collect::<Vec<&P>>();
         let u_vec = (0..com_vec2.len())
             .map(|i| &decom_vec2[i].u_i)
-            .collect::<Vec<&GE>>();
+            .collect::<Vec<&P>>();
         let b_vec = (0..decom_vec1.len())
             .map(|i| &decom_vec1[i].B_i)
-            .collect::<Vec<&GE>>();
+            .collect::<Vec<&P>>();
 
-        let g: GE = ECPoint::generator();
-        let biased_sum_tb = t_vec.iter().zip(b_vec).fold(g, |acc, x| acc + *x.0 + x.1);
+        let g: P = ECPoint::generator();
+        let biased_sum_tb = t_vec
+            .iter()
+            .zip(b_vec)
+            .fold(g.clone(), |acc, x| acc + (*x.0).clone() + x.1.clone());
         let biased_sum_tb_minus_u = u_vec
             .iter()
             .fold(biased_sum_tb, |acc, x| acc.sub_point(&x.get_element()));
         if test_com {
             if g == biased_sum_tb_minus_u {
-                Ok(self.s_i)
+                Ok(self.s_i.clone())
             } else {
                 Err(InvalidKey)
             }
@@ -671,12 +717,24 @@ impl LocalSignature {
             Err(InvalidCom)
         }
     }
-    pub fn output_signature(&self, s_vec: &[FE]) -> Result<SignatureRecid, Error> {
-        let mut s = s_vec.iter().fold(self.s_i, |acc, x| acc + x);
+    pub fn output_signature(&self, s_vec: &[P::Scalar]) -> Result<SignatureRecid<P>, Error> {
+        let mut s = s_vec
+            .iter()
+            .fold(self.s_i.clone(), |acc, x| acc + x.clone());
         let s_bn = s.to_big_int();
 
-        let r: FE = ECScalar::from(&self.R.x_coor().unwrap().mod_floor(&FE::q()));
-        let ry: BigInt = self.R.y_coor().unwrap().mod_floor(&FE::q());
+        let r: P::Scalar = ECScalar::from(
+            &self
+                .R
+                .x_coor()
+                .unwrap()
+                .mod_floor(&<P::Scalar as ECScalar>::q()),
+        );
+        let ry: BigInt = self
+            .R
+            .y_coor()
+            .unwrap()
+            .mod_floor(&<P::Scalar as ECScalar>::q());
 
         /*
          Calculate recovery id - it is not possible to compute the public key out of the signature
@@ -686,7 +744,7 @@ impl LocalSignature {
         */
         let is_ry_odd = ry.tstbit(0);
         let mut recid = if is_ry_odd { 1 } else { 0 };
-        let s_tag_bn = FE::q() - &s_bn;
+        let s_tag_bn = <P::Scalar as ECScalar>::q() - &s_bn;
         if s_bn > s_tag_bn {
             s = ECScalar::from(&s_tag_bn);
             recid = recid ^ 1;
@@ -701,18 +759,29 @@ impl LocalSignature {
     }
 }
 
-pub fn verify(sig: &SignatureRecid, y: &GE, message: &BigInt) -> Result<(), Error> {
+pub fn verify<P>(sig: &SignatureRecid<P>, y: &P, message: &BigInt) -> Result<(), Error>
+where
+    P: ECPoint + Clone,
+    P::Scalar: Clone + PartialEq,
+{
     let b = sig.s.invert();
-    let a: FE = ECScalar::from(message);
-    let u1 = a * b;
-    let u2 = sig.r * b;
+    let a: P::Scalar = ECScalar::from(message);
+    let u1 = a * b.clone();
+    let u2 = sig.r.clone() * b;
 
-    let g: GE = ECPoint::generator();
+    let g: P = ECPoint::generator();
     let gu1 = g * u1;
-    let yu2 = y * &u2;
+    let yu2 = y.clone() * u2;
     // can be faster using shamir trick
 
-    if sig.r == ECScalar::from(&(gu1 + yu2).x_coor().unwrap().mod_floor(&FE::q())) {
+    if sig.r
+        == ECScalar::from(
+            &(gu1 + yu2)
+                .x_coor()
+                .unwrap()
+                .mod_floor(&<P::Scalar as ECScalar>::q()),
+        )
+    {
         Ok(())
     } else {
         Err(InvalidSig)
