@@ -87,25 +87,21 @@ where
 {
     pub fn b(
         b: &P::Scalar,
-        alice_ek: &EncryptionKey,
+        bob_ek: &EncryptionKey,
         c_a: MessageA,
     ) -> (Self, P::Scalar, BigInt, BigInt) {
-        let beta_tag = BigInt::sample_below(&alice_ek.n);
-        let beta_tag_fe: P::Scalar = ECScalar::from(&beta_tag);
-        let randomness = BigInt::sample_below(&alice_ek.n);
+        let beta_tag_fe: P::Scalar = ECScalar::new_random();
+        let beta_tag = beta_tag_fe.to_big_int();
+        let randomness = BigInt::sample_below(&bob_ek.n);
         let c_beta_tag = Paillier::encrypt_with_chosen_randomness(
-            alice_ek,
+            bob_ek,
             RawPlaintext::from(beta_tag.clone()),
             &Randomness::from(randomness.clone()),
         );
 
         let b_bn = b.to_big_int();
-        let b_c_a = Paillier::mul(
-            alice_ek,
-            RawCiphertext::from(c_a.c),
-            RawPlaintext::from(b_bn),
-        );
-        let c_b = Paillier::add(alice_ek, b_c_a, c_beta_tag);
+        let b_c_a = Paillier::mul(bob_ek, RawCiphertext::from(c_a.c), RawPlaintext::from(b_bn));
+        let c_b = Paillier::add(bob_ek, b_c_a, c_beta_tag);
         let beta = <P::Scalar as ECScalar>::zero().sub(&beta_tag_fe.get_element());
         let dlog_proof_b = DLogProof::prove(b);
         let dlog_proof_beta_tag = DLogProof::prove(&beta_tag_fe);
